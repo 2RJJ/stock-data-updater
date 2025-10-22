@@ -7,7 +7,6 @@ from datetime import datetime, timedelta
 def fetch_and_append(symbol, days_back=60, output_file=None):
     if output_file is None:
         output_file = f"{symbol}_15min.txt"
-    # Enforce 60-day limit for Yahoo Finance 15m data
     days_back = min(days_back, 60)
     end_date = datetime.now()
     start_date = end_date - timedelta(days=days_back)
