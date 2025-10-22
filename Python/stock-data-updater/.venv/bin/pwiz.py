@@ -1,4 +1,4 @@
-#!/Users/ronjones/Python/stock-data-updater/.venv/bin/python3.11
+#!/Users/ronjones/Python/stock-data-updater/.venv/bin/python3.14
 
 import datetime
 import os
