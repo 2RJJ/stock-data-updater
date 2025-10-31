@@ -1,30 +1,63 @@
-      - name: Send Wake-on-LAN to Secondary Mac
+name: Update 15-Min Stock Data
+
+on:
+  schedule:
+    - cron: '*/15 * * * 1-5'  # Every 15 min, Mon–Fri
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  update-and-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas
+
+      - name: Run update_data.py
+        run: |
+          python update_data.py --days 7
+          echo "Data downloaded"
+
+      - name: Send Wake-on-LAN
         run: |
           MAC="${{ secrets.WOL_MAC }}"
-          printf 'f'%s $(seq 1 6) > /tmp/wol.bin
-          printf "%s" $MAC | sed 's/://g' | fold -w2 | xargs printf '%s' | \
+          # Build magic packet: 6x FF + 16x MAC
+          printf 'f'%.0s {1..6} > /tmp/wol.bin
+          printf "%s" "$MAC" | sed 's/://g' | fold -w2 | xargs printf '%s' | \
             awk '{for(i=1;i<=16;i++) printf $0}' >> /tmp/wol.bin
+          # Send via UDP broadcast
           cat /tmp/wol.bin | xxd -r -p | nc -w1 -u 172.24.255.255 9
           echo "WOL sent to $MAC"
 
-      - name: Wait for Mac to wake (120s + retry SSH)
+      - name: Wait and retry SSH (120s + 12 attempts)
         run: |
-          echo "Waiting 120 seconds for ZeroTier reconnect..."
+          echo "Waiting 120s for ZeroTier to reconnect..."
           sleep 120
 
           for i in {1..12}; do
-            echo "SSH retry $i/12..."
+            echo "SSH attempt $i..."
             if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes \
               ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
-              "echo 'Mac awake on attempt $i' && uptime" 2>/dev/null; then
-              echo "SUCCESS: Mac is fully awake and responsive"
-              exit 0
+              "echo 'Awake on attempt $i' && uptime" 2>/dev/null; then
+              echo "SUCCESS: Mac is awake"
+              break
             fi
             sleep 10
           done
-
-          echo "FAILED: Mac did not respond after 12 attempts"
-          exit 1
 
       - name: Transfer data to Secondary Mac
         uses: appleboy/scp-action@v0.1.7
@@ -36,3 +69,8 @@
           source: "stock_data.csv"
           target: "~/stock_data/"
           overwrite: true
+
+      - name: Confirm on Secondary Mac
+        run: |
+          ssh ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
+            "ls -la ~/stock_data/stock_data.csv && date '+Sync: %H:%M:%S'"
