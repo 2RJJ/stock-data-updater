@@ -1,34 +1,81 @@
-name: Update 15-Min Data
+name: Update 15-Min Stock Data
+
 on:
   schedule:
-    - cron: '0 17 * * 1-5'  # Mon-Fri at 17:00 UTC (12:00 PM ET)
+    - cron: '*/15 * * * 1-5'  # Every 15 min, Mon–Fri (UTC)
+    - cron: '0 17 * * 1-5'    # Optional: Daily summary at 17:00 UTC
   workflow_dispatch:
+
+permissions:
+  contents: read
+  # write not needed unless pushing back to repo
+
 jobs:
-  update:
+  update-and-sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
     steps:
-    - name: Checkout repo
-      uses: actions/checkout@v4
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.14'  # Updated to match local
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install yfinance pandas
-    - name: Run update script (last 7 days for daily run)
-      run: python update_data.py --days 7
-    - name: Commit and push changes
-      run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        git add -f *.txt  # Force add ignored files
-        if git diff --staged --quiet; then
-          echo "No changes to commit"
-        else
-          git commit -m "Append latest 15-min data - $(date)"
-          git push
-        fi
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'  # Stable, widely supported
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas
+
+      - name: Run update_data.py (last 7 days)
+        run: |
+          python update_data.py --days 7
+          echo "Data download complete"
+
+      - name: Send Wake-on-LAN to Secondary Mac
+        run: |
+          MAC="${{ secrets.WOL_MAC }}"
+          PACKET=$(printf 'f'%s $(seq 1 6); printf "%s" $MAC | sed 's/://g' | fold -w2 | xargs printf "%s" | awk '{for(i=1;i<=16;i++) printf $0}')
+          printf "$(echo $PACKET | sed 's/../\\x&/g')" | nc -w1 -u 172.24.255.255 9
+          echo "WOL packet sent"
+
+      - name: Wait for Mac to wake
+        run: sleep 30
+
+      - name: Test SSH connection
+        run: |
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
+            "echo 'Secondary Mac is awake and SSH ready'"
+
+      - name: Transfer data to Secondary Mac
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SECONDARY_HOST }}
+          username: ${{ secrets.SECONDARY_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          source: "stock_data.csv"  # Or *.txt, *.json, etc.
+          target: "~/stock_data/"
+          overwrite: true
+
+      - name: Confirm transfer
+        run: |
+          ssh ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
+            "ls -la ~/stock_data/stock_data.csv && date '+Sync complete: %Y-%m-%d %H:%M:%S'"
+
+      # Optional: Commit & push data back to GitHub (if you want history)
+      - name: Commit and push data file
+        if: success()
+        run: |
+          git config user.email "action@github.com"
+          git config user.name "GitHub Action"
+          git add stock_data.csv
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update stock data - $(date '+%Y-%m-%d %H:%M')"
+            git push origin HEAD:${{ github.ref }}
+          fi
