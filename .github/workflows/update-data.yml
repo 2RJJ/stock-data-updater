@@ -55,32 +55,34 @@ jobs:
           cat /tmp/wol.bin | xxd -r -p | nc -w1 -u 172.24.255.255 9
           echo "WOL sent to $MAC"
 
-      - name: Wait for ZeroTier + SSH (300s + 30 attempts)
+      - name: Wait for ZeroTier to be ONLINE (max 10 min)
         run: |
-          echo "Waiting 300s for ZeroTier + full wake..."
-          sleep 300
-
-          for i in {1..30}; do
-            echo "SSH test $i/30..."
-            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes \
+          echo "Waiting for ZeroTier to be ONLINE..."
+          for i in {1..60}; do
+            STATUS=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes \
               ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
-              "echo 'ALIVE' && uptime && caffeinate -t 300 &" 2>/dev/null; then
-              echo "MAC FULLY AWAKE AND KEPT AWAKE"
+              "zerotier-cli status 2>/dev/null | grep -o ONLINE || echo 'OFFLINE'" 2>/dev/null || echo "NO_SSH")
+            
+            if [[ "$STATUS" == "ONLINE" ]]; then
+              echo "ZeroTier is ONLINE"
+              ssh -o StrictHostKeyChecking=no -o BatchMode=yes \
+                ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
+                "caffeinate -t 300 &"
               break
             fi
-            echo "Still waking... ($i)"
+            
+            echo "ZeroTier: $STATUS (attempt $i/60)"
             sleep 10
           done
 
-          if ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes \
-            ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} "echo 'FINAL'"; then
-            echo "SSH FAILED AFTER 5 MIN"
+          if [[ "$STATUS" != "ONLINE" ]]; then
+            echo "ZeroTier FAILED to come online"
             exit 1
           fi
 
       - name: Test SSH key authentication
         run: |
-          echo "Testing key login..."
+          echo "Testing key-based login..."
           ssh -o StrictHostKeyChecking=no -o BatchMode=yes \
             ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
             "echo 'KEY AUTH SUCCESS' && whoami && mkdir -p ~/Library/Mobile\\ Documents/com~apple~CloudDocs/Documents/Wave59/Data/Yahoo"
@@ -94,10 +96,4 @@ jobs:
           port: 22
           source: "Wave59_Yahoo_Data/"
           target: "/Users/ronaldjones/Library/Mobile Documents/com~apple~CloudDocs/Documents/Wave59/Data/Yahoo/"
-          overwrite: true
-          rm: false
-
-      - name: Confirm files
-        run: |
-          ssh ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
-            "find ~/Library/Mobile\\ Documents/com~apple~CloudDocs/Documents/Wave59/Data/Yahoo -name '*_15m.csv' -exec ls -la {} \\; | head -5"
+          overwrite
