@@ -85,6 +85,7 @@ jobs:
           source: "Wave59_Yahoo_Data/"
           target: "/Users/ronaldjones/Library/Mobile Documents/com~apple~CloudDocs/Documents/Wave59/Data/Yahoo/"
           overwrite: true
+          rm: false   # ← SAFE: Never deletes old files
 
       - name: Confirm files
         run: |
