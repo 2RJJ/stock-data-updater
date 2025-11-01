@@ -2,8 +2,8 @@ name: Update Wave59 Yahoo Data
 
 on:
   schedule:
-    - cron: '0 0 * * 1-5'   # Daily at 00:00 UTC (full daily bars)
-    - cron: '*/15 9-16 * * 1-5'  # Every 15 min, 9AM–4PM ET
+    - cron: '0 0 * * 1-5'               # Daily full history (00:00 UTC)
+    - cron: '*/15 9-16 * * 1-5'         # Every 15 min, 9AM–4PM ET
   workflow_dispatch:
     inputs:
       mode:
@@ -17,10 +17,12 @@ permissions:
   contents: read
 
 jobs:
-  update:
+  update-and-sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -28,21 +30,52 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install deps
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install yfinance pandas
 
-      - name: Run update
+      - name: Run update_data.py
         run: |
           MODE="${{ inputs.mode || '15min' }}"
           if [[ "$MODE" == "daily" ]]; then
-            python update_data.py --mode daily --years 5
+            echo "Running DAILY mode (full history)"
+            python update_data.py --mode daily --years 30
           else
+            echo "Running 15-MIN mode (incremental)"
             python update_data.py --mode 15min
           fi
 
-      - name: Transfer to Secondary Mac
+      - name: Send Wake-on-LAN
+        run: |
+          MAC="${{ secrets.WOL_MAC }}"
+          printf 'f'%.0s {1..6} > /tmp/wol.bin
+          printf "%s" "$MAC" | sed 's/://g' | fold -w2 | xargs printf '%s' | \
+            awk '{for(i=1;i<=16;i++) printf $0}' >> /tmp/wol.bin
+          cat /tmp/wol.bin | xxd -r -p | nc -w1 -u 172.24.255.255 9
+          echo "WOL sent to $MAC"
+
+      - name: Wait and retry SSH
+        run: |
+          echo "Waiting 120s for ZeroTier..."
+          sleep 120
+          for i in {1..12}; do
+            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes \
+              ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
+              "echo 'Alive' && uptime" 2>/dev/null; then
+              echo "Mac is awake"
+              break
+            fi
+            sleep 10
+          done
+
+      - name: Test SSH key
+        run: |
+          ssh -o StrictHostKeyChecking=no -o BatchMode=yes \
+            ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
+            "echo 'KEY AUTH OK' && mkdir -p ~/Library/Mobile\\ Documents/com~apple~CloudDocs/Documents/Wave59/Data/Yahoo"
+
+      - name: Transfer ALL data
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SECONDARY_HOST }}
@@ -53,7 +86,7 @@ jobs:
           target: "/Users/ronaldjones/Library/Mobile Documents/com~apple~CloudDocs/Documents/Wave59/Data/Yahoo/"
           overwrite: true
 
-      - name: Confirm
+      - name: Confirm files
         run: |
           ssh ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
-            "find ~/Library/Mobile\\ Documents/com~apple~CloudDocs/Documents/Wave59/Data/Yahoo -name '*_15m.csv' -exec ls -la {} \\; | head -5"
+            "find ~/Library/Mobile\\ Documents/com~apple~CloudDocs/Documents/Wave59/Data/Yahoo -name '*_15m.csv' -o -name '*_daily.csv' -exec ls -la {} \\; | head -10"
