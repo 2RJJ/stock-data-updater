@@ -55,25 +55,35 @@ jobs:
           cat /tmp/wol.bin | xxd -r -p | nc -w1 -u 172.24.255.255 9
           echo "WOL sent to $MAC"
 
-      - name: Wait and retry SSH
+      - name: Wait for ZeroTier + SSH (180s + 18 attempts)
         run: |
-          echo "Waiting 120s for ZeroTier..."
-          sleep 120
-          for i in {1..12}; do
+          echo "Waiting 180s for ZeroTier to fully reconnect..."
+          sleep 180
+
+          for i in {1..18}; do
+            echo "SSH connectivity test $i/18..."
             if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes \
               ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
-              "echo 'Alive' && uptime" 2>/dev/null; then
-              echo "Mac is awake"
+              "echo 'Network OK' && uptime" 2>/dev/null; then
+              echo "SSH CONNECTED"
               break
             fi
+            echo "Still waiting... (attempt $i)"
             sleep 10
           done
 
-      - name: Test SSH key
+          if ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes \
+            ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} "echo 'Final check'"; then
+            echo "SSH FAILED AFTER ALL RETRIES"
+            exit 1
+          fi
+
+      - name: Test SSH key authentication
         run: |
+          echo "Testing key-based login..."
           ssh -o StrictHostKeyChecking=no -o BatchMode=yes \
             ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
-            "echo 'KEY AUTH OK' && mkdir -p ~/Library/Mobile\\ Documents/com~apple~CloudDocs/Documents/Wave59/Data/Yahoo"
+            "echo 'KEY AUTH SUCCESS' && whoami && pwd && mkdir -p ~/Library/Mobile\\ Documents/com~apple~CloudDocs/Documents/Wave59/Data/Yahoo"
 
       - name: Transfer ALL data
         uses: appleboy/scp-action@v0.1.7
