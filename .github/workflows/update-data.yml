@@ -19,7 +19,7 @@ permissions:
 jobs:
   update-and-sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repository
@@ -55,35 +55,35 @@ jobs:
           cat /tmp/wol.bin | xxd -r -p | nc -w1 -u 172.24.255.255 9
           echo "WOL sent to $MAC"
 
-      - name: Wait for ZeroTier + SSH (180s + 18 attempts)
+      - name: Wait for ZeroTier + SSH (300s + 30 attempts)
         run: |
-          echo "Waiting 180s for ZeroTier to fully reconnect..."
-          sleep 180
+          echo "Waiting 300s for ZeroTier + full wake..."
+          sleep 300
 
-          for i in {1..18}; do
-            echo "SSH connectivity test $i/18..."
+          for i in {1..30}; do
+            echo "SSH test $i/30..."
             if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes \
               ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
-              "echo 'Network OK' && uptime" 2>/dev/null; then
-              echo "SSH CONNECTED"
+              "echo 'ALIVE' && uptime && caffeinate -t 300 &" 2>/dev/null; then
+              echo "MAC FULLY AWAKE AND KEPT AWAKE"
               break
             fi
-            echo "Still waiting... (attempt $i)"
+            echo "Still waking... ($i)"
             sleep 10
           done
 
           if ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes \
-            ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} "echo 'Final check'"; then
-            echo "SSH FAILED AFTER ALL RETRIES"
+            ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} "echo 'FINAL'"; then
+            echo "SSH FAILED AFTER 5 MIN"
             exit 1
           fi
 
       - name: Test SSH key authentication
         run: |
-          echo "Testing key-based login..."
+          echo "Testing key login..."
           ssh -o StrictHostKeyChecking=no -o BatchMode=yes \
             ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
-            "echo 'KEY AUTH SUCCESS' && whoami && pwd && mkdir -p ~/Library/Mobile\\ Documents/com~apple~CloudDocs/Documents/Wave59/Data/Yahoo"
+            "echo 'KEY AUTH SUCCESS' && whoami && mkdir -p ~/Library/Mobile\\ Documents/com~apple~CloudDocs/Documents/Wave59/Data/Yahoo"
 
       - name: Transfer ALL data
         uses: appleboy/scp-action@v0.1.7
@@ -95,9 +95,9 @@ jobs:
           source: "Wave59_Yahoo_Data/"
           target: "/Users/ronaldjones/Library/Mobile Documents/com~apple~CloudDocs/Documents/Wave59/Data/Yahoo/"
           overwrite: true
-          rm: false   # ← SAFE: Never deletes old files
+          rm: false
 
       - name: Confirm files
         run: |
           ssh ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
-            "find ~/Library/Mobile\\ Documents/com~apple~CloudDocs/Documents/Wave59/Data/Yahoo -name '*_15m.csv' -o -name '*_daily.csv' -exec ls -la {} \\; | head -10"
+            "find ~/Library/Mobile\\ Documents/com~apple~CloudDocs/Documents/Wave59/Data/Yahoo -name '*_15m.csv' -exec ls -la {} \\; | head -5"
