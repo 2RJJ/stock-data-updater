@@ -31,35 +31,40 @@ jobs:
         run: |
           python update_data.py --days 7
           echo "Data downloaded"
+          ls -la stock_data.csv || (echo "ERROR: No stock_data.csv!" && exit 1)
 
       - name: Send Wake-on-LAN
         run: |
           MAC="${{ secrets.WOL_MAC }}"
-          # Build magic packet: 6x FF + 16x MAC
           printf 'f'%.0s {1..6} > /tmp/wol.bin
           printf "%s" "$MAC" | sed 's/://g' | fold -w2 | xargs printf '%s' | \
             awk '{for(i=1;i<=16;i++) printf $0}' >> /tmp/wol.bin
-          # Send via UDP broadcast
           cat /tmp/wol.bin | xxd -r -p | nc -w1 -u 172.24.255.255 9
           echo "WOL sent to $MAC"
 
       - name: Wait and retry SSH (120s + 12 attempts)
         run: |
-          echo "Waiting 120s for ZeroTier to reconnect..."
+          echo "Waiting 120s for ZeroTier reconnect..."
           sleep 120
-
           for i in {1..12}; do
             echo "SSH attempt $i..."
             if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes \
               ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
-              "echo 'Awake on attempt $i' && uptime" 2>/dev/null; then
-              echo "SUCCESS: Mac is awake"
+              "echo 'Alive' && uptime" 2>/dev/null; then
+              echo "Mac is awake"
               break
             fi
             sleep 10
           done
 
-      - name: Transfer data to Secondary Mac
+      - name: Test SSH key authentication
+        run: |
+          echo "Testing key-based login..."
+          ssh -o StrictHostKeyChecking=no -o BatchMode=yes \
+            ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
+            "echo 'KEY AUTH SUCCESS' && whoami && pwd && mkdir -p ~/stock_data"
+
+      - name: Transfer stock_data.csv
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SECONDARY_HOST }}
@@ -70,7 +75,7 @@ jobs:
           target: "~/stock_data/"
           overwrite: true
 
-      - name: Confirm on Secondary Mac
+      - name: Confirm file arrived
         run: |
           ssh ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
-            "ls -la ~/stock_data/stock_data.csv && date '+Sync: %H:%M:%S'"
+            "ls -la ~/stock_data/stock_data.csv && date '+File received at %H:%M:%S'"
