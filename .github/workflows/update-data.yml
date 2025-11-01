@@ -1,20 +1,26 @@
-name: Update 15-Min Stock Data
+name: Update Wave59 Yahoo Data
 
 on:
   schedule:
-    - cron: '*/15 * * * 1-5'  # Every 15 min, Mon–Fri
+    - cron: '0 0 * * 1-5'   # Daily at 00:00 UTC (full daily bars)
+    - cron: '*/15 9-16 * * 1-5'  # Every 15 min, 9AM–4PM ET
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run mode'
+        required: true
+        default: '15min'
+        type: choice
+        options: ['daily', '15min']
 
 permissions:
   contents: read
 
 jobs:
-  update-and-sync:
+  update:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -22,60 +28,32 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install yfinance pandas
 
-      - name: Run update_data.py
+      - name: Run update
         run: |
-          python update_data.py --days 7
-          echo "Data downloaded"
-          ls -la stock_data.csv || (echo "ERROR: No stock_data.csv!" && exit 1)
+          MODE="${{ inputs.mode || '15min' }}"
+          if [[ "$MODE" == "daily" ]]; then
+            python update_data.py --mode daily --years 5
+          else
+            python update_data.py --mode 15min
+          fi
 
-      - name: Send Wake-on-LAN
-        run: |
-          MAC="${{ secrets.WOL_MAC }}"
-          printf 'f'%.0s {1..6} > /tmp/wol.bin
-          printf "%s" "$MAC" | sed 's/://g' | fold -w2 | xargs printf '%s' | \
-            awk '{for(i=1;i<=16;i++) printf $0}' >> /tmp/wol.bin
-          cat /tmp/wol.bin | xxd -r -p | nc -w1 -u 172.24.255.255 9
-          echo "WOL sent to $MAC"
-
-      - name: Wait and retry SSH (120s + 12 attempts)
-        run: |
-          echo "Waiting 120s for ZeroTier reconnect..."
-          sleep 120
-          for i in {1..12}; do
-            echo "SSH attempt $i..."
-            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes \
-              ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
-              "echo 'Alive' && uptime" 2>/dev/null; then
-              echo "Mac is awake"
-              break
-            fi
-            sleep 10
-          done
-
-      - name: Test SSH key authentication
-        run: |
-          echo "Testing key-based login..."
-          ssh -o StrictHostKeyChecking=no -o BatchMode=yes \
-            ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
-            "echo 'KEY AUTH SUCCESS' && whoami && pwd && mkdir -p ~/stock_data"
-
-      - name: Transfer stock_data.csv
+      - name: Transfer to Secondary Mac
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SECONDARY_HOST }}
           username: ${{ secrets.SECONDARY_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 22
-          source: "stock_data.csv"
-          target: "~/stock_data/"
+          source: "Wave59_Yahoo_Data/"
+          target: "/Users/ronaldjones/Library/Mobile Documents/com~apple~CloudDocs/Documents/Wave59/Data/Yahoo/"
           overwrite: true
 
-      - name: Confirm file arrived
+      - name: Confirm
         run: |
           ssh ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
-            "ls -la ~/stock_data/stock_data.csv && date '+File received at %H:%M:%S'"
+            "find ~/Library/Mobile\\ Documents/com~apple~CloudDocs/Documents/Wave59/Data/Yahoo -name '*_15m.csv' -exec ls -la {} \\; | head -5"
