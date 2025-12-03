@@ -1,68 +1,34 @@
-#!/usr/bin/env python3
-import argparse
-import sys
-from pathlib import Path
-import pandas as pd
-import yfinance as yf
-from datetime import datetime, timedelta
-import time
+name: Update Wave59 Yahoo Data (MacBook Pro internal)
 
-# =============== ARGUMENTS ===============
-parser = argparse.ArgumentParser(description="Yahoo Finance → Wave59 data downloader")
-parser.add_argument('--mode', choices=['daily', '15min'], required=True)
-parser.add_argument('--years', type=int, default=20, help="Years of daily history (daily mode only)")
-parser.add_argument('--output-dir', type=str, 
-                    default="/Users/ronjones/Documents/YahooFinance")
-args = parser.parse_args()
+on:
+  schedule:
+    - cron: '0 0 * * 1-5'                  # Daily full history
+    - cron: '14,29,44,59 13-20 * * 1-5'    # Every 15 min during US market hours (UTC-adjusted)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run mode'
+        required: true
+        default: '15min'
+        type: choice
+        options: ['daily', '15min']
 
-OUTPUT_DIR = Path(args.output_dir)
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+jobs:
+  run-on-mac:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run script directly on MacBook Pro
+        run: |
+          MODE="${{ inputs.mode || '15min' }}"
+          if [[ "$MODE" == "daily" ]]; then
+            ssh -o StrictHostKeyChecking=no ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
+              "cd ~/Scripts/yahoo_update && python3 update_data.py --mode daily --years 30"
+          else
+            ssh -o StrictHostKeyChecking=no ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
+              "cd ~/Scripts/yahoo_update && python3 update_data.py --mode 15min"
+          fi
 
-print(f"Saving all files to: {OUTPUT_DIR}")
-print(f"Mode: {args.mode.upper()} – Started at {datetime.now():%Y-%m-%d %H:%M:%S}\n")
-
-# =============== YOUR TICKER LIST (edit anytime) ===============
-TICKERS = [
-    "SPY", "QQQ", "IWM", "DIA",
-    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
-    "ES=F", "NQ=F", "YM=F", "RTY=F",
-    "^VIX", "^TNX", "^VXN",
-    "GLD", "SLV", "USO", "TLT",
-    # ← add/remove anything you need here
-]
-
-failed = []
-
-for ticker in TICKERS:
-    try:
-        print(f"{ticker.ljust(10)} → downloading... ", end="")
-        t = yf.Ticker(ticker)
-
-        if args.mode == "daily":
-            start = (datetime.today() - timedelta(days=args.years * 365)).strftime("%Y-%m-%d")
-            df = t.history(start=start, interval="1d")
-            filename = OUTPUT_DIR / f"{ticker}_daily.csv"
-        else:  # 15min
-            df = t.history(period="60d", interval="15m")
-            filename = OUTPUT_DIR / f"{ticker}_15m.csv"
-
-        if df.empty:
-            print("EMPTY")
-            failed.append(ticker)
-            continue
-
-        df = df.drop(columns=["Dividends", "Stock Splits"], errors="ignore")
-        df.to_csv(filename)
-        print(f"✓ {len(df):,} rows")
-
-        time.sleep(0.5)  # be nice to Yahoo
-    except Exception as e:
-        print(f"✗ FAILED ({e})")
-        failed.append(ticker)
-
-print("\n" + "="*60)
-print(f"Finished {datetime.now():%Y-%m-%d %H:%M:%S}")
-print(f"Success: {len(TICKERS)-len(failed)} / {len(TICKERS)}")
-if failed:
-    print("Failed:", ", ".join(failed))
-print("="*60)
+      - name: Show latest files
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
+            "ls -lt '/Users/ronjones/Documents/YahooFinance' | head -12"
