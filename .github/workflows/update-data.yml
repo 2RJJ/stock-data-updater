@@ -1,105 +1,68 @@
-name: Update Wave59 Yahoo Data
+#!/usr/bin/env python3
+import argparse
+import sys
+from pathlib import Path
+import pandas as pd
+import yfinance as yf
+from datetime import datetime, timedelta
+import time
 
-on:
-  schedule:
-    - cron: '0 0 * * 1-5'               # Daily full history (00:00 UTC)
-    - cron: '*/15 9-16 * * 1-5'         # Every 15 min, 9AM–4PM ET
-  workflow_dispatch:
-    inputs:
-      mode:
-        description: 'Run mode'
-        required: true
-        default: '15min'
-        type: choice
-        options: ['daily', '15min']
+# =============== ARGUMENTS ===============
+parser = argparse.ArgumentParser(description="Yahoo Finance → Wave59 data downloader")
+parser.add_argument('--mode', choices=['daily', '15min'], required=True)
+parser.add_argument('--years', type=int, default=20, help="Years of daily history (daily mode only)")
+parser.add_argument('--output-dir', type=str, 
+                    default="/Users/ronjones/Documents/YahooFinance")
+args = parser.parse_args()
 
-permissions:
-  contents: read
+OUTPUT_DIR = Path(args.output_dir)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-jobs:
-  update-and-sync:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+print(f"Saving all files to: {OUTPUT_DIR}")
+print(f"Mode: {args.mode.upper()} – Started at {datetime.now():%Y-%m-%d %H:%M:%S}\n")
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+# =============== YOUR TICKER LIST (edit anytime) ===============
+TICKERS = [
+    "SPY", "QQQ", "IWM", "DIA",
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
+    "ES=F", "NQ=F", "YM=F", "RTY=F",
+    "^VIX", "^TNX", "^VXN",
+    "GLD", "SLV", "USO", "TLT",
+    # ← add/remove anything you need here
+]
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+failed = []
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install yfinance pandas
+for ticker in TICKERS:
+    try:
+        print(f"{ticker.ljust(10)} → downloading... ", end="")
+        t = yf.Ticker(ticker)
 
-      - name: Run update_data.py
-        run: |
-          MODE="${{ inputs.mode || '15min' }}"
-          if [[ "$MODE" == "daily" ]]; then
-            echo "Running DAILY mode (full history)"
-            python update_data.py --mode daily --years 30
-          else
-            echo "Running 15-MIN mode (incremental)"
-            python update_data.py --mode 15min
-          fi
+        if args.mode == "daily":
+            start = (datetime.today() - timedelta(days=args.years * 365)).strftime("%Y-%m-%d")
+            df = t.history(start=start, interval="1d")
+            filename = OUTPUT_DIR / f"{ticker}_daily.csv"
+        else:  # 15min
+            df = t.history(period="60d", interval="15m")
+            filename = OUTPUT_DIR / f"{ticker}_15m.csv"
 
-      - name: Send Wake-on-LAN
-        run: |
-          MAC="${{ secrets.WOL_MAC }}"
-          printf 'f'%.0s {1..6} > /tmp/wol.bin
-          printf "%s" "$MAC" | sed 's/://g' | fold -w2 | xargs printf '%s' | \
-            awk '{for(i=1;i<=16;i++) printf $0}' >> /tmp/wol.bin
-          cat /tmp/wol.bin | xxd -r -p | nc -w1 -u 172.24.255.255 9
-          echo "WOL sent to $MAC"
+        if df.empty:
+            print("EMPTY")
+            failed.append(ticker)
+            continue
 
-      - name: Wait for ZeroTier to be ONLINE (max 10 min)
-        run: |
-          echo "Waiting for ZeroTier to be ONLINE..."
-          for i in {1..60}; do
-            STATUS=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes \
-              ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
-              "zerotier-cli status 2>/dev/null | grep -o ONLINE || echo 'OFFLINE'" 2>/dev/null || echo "NO_SSH")
-            
-            if [[ "$STATUS" == "ONLINE" ]]; then
-              echo "ZeroTier is ONLINE"
-              ssh -o StrictHostKeyChecking=no -o BatchMode=yes \
-                ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
-                "caffeinate -t 300 &"
-              break
-            fi
-            
-            echo "ZeroTier: $STATUS (attempt $i/60)"
-            sleep 10
-          done
+        df = df.drop(columns=["Dividends", "Stock Splits"], errors="ignore")
+        df.to_csv(filename)
+        print(f"✓ {len(df):,} rows")
 
-          if [[ "$STATUS" != "ONLINE" ]]; then
-            echo "ZeroTier FAILED to come online"
-            exit 1
-          fi
+        time.sleep(0.5)  # be nice to Yahoo
+    except Exception as e:
+        print(f"✗ FAILED ({e})")
+        failed.append(ticker)
 
-      - name: Test SSH key authentication
-        run: |
-          echo "Testing key-based login..."
-          ssh -o StrictHostKeyChecking=no -o BatchMode=yes \
-            ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
-            "echo 'KEY AUTH SUCCESS' && whoami && pwd && mkdir -p ~/Library/Mobile\\ Documents/com~apple~CloudDocs/Documents/Wave59/Data/Yahoo"
-
-      - name: Transfer ALL data
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SECONDARY_HOST }}
-          username: ${{ secrets.SECONDARY_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: 22
-          source: "Wave59_Yahoo_Data/"
-          target: "/Users/ronaldjones/Library/Mobile Documents/com~apple~CloudDocs/Documents/Wave59/Data/Yahoo/"
-          overwrite: true
-          rm: false
-
-      - name: Confirm files
-        run: |
-          ssh ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
-            "find ~/Library/Mobile\\ Documents/com~apple~CloudDocs/Documents/Wave59/Data/Yahoo -name '*_15m.csv' -o -name '*_daily.csv' -exec ls -la {} \\; | head -10"
+print("\n" + "="*60)
+print(f"Finished {datetime.now():%Y-%m-%d %H:%M:%S}")
+print(f"Success: {len(TICKERS)-len(failed)} / {len(TICKERS)}")
+if failed:
+    print("Failed:", ", ".join(failed))
+print("="*60)
