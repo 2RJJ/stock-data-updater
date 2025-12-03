@@ -1,9 +1,8 @@
-name: Update Wave59 Yahoo Data (MacBook Pro internal)
-
+name: Yahoo Finance → /Users/ronjones/Documents/YahooFinance
 on:
   schedule:
     - cron: '0 0 * * 1-5'                  # Daily full history
-    - cron: '14,29,44,59 13-20 * * 1-5'    # Every 15 min during US market hours (UTC-adjusted)
+    - cron: '14,29,44,59 13-20 * * 1-5'    # Every 15 min market hours
   workflow_dispatch:
     inputs:
       mode:
@@ -12,23 +11,3 @@ on:
         default: '15min'
         type: choice
         options: ['daily', '15min']
-
-jobs:
-  run-on-mac:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Run script directly on MacBook Pro
-        run: |
-          MODE="${{ inputs.mode || '15min' }}"
-          if [[ "$MODE" == "daily" ]]; then
-            ssh -o StrictHostKeyChecking=no ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
-              "cd ~/Scripts/yahoo_update && python3 update_data.py --mode daily --years 30"
-          else
-            ssh -o StrictHostKeyChecking=no ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
-              "cd ~/Scripts/yahoo_update && python3 update_data.py --mode 15min"
-          fi
-
-      - name: Show latest files
-        run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
-            "ls -lt '/Users/ronjones/Documents/YahooFinance' | head -12"
