@@ -1,77 +1,78 @@
 #!/usr/bin/env python3
-import yfinance as yf
-import pandas as pd
-import os
-import sys
-import time
-from datetime import datetime, timedelta
 import argparse
+import sys
+from pathlib import Path
+import pandas as pd
+import yfinance as yf
+from datetime import datetime, timedelta
+import time
 
-# === CONFIG ===
-TICKERS = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'NVDA', '^GSPC', '^DJI']
-BASE_DIR = "Wave59_Yahoo_Data"
-RATE_LIMIT_SEC = 2  # Be kind to Yahoo
+# =============== ARGUMENTS ===============
+parser = argparse.ArgumentParser(description="Yahoo Finance → Wave59 data downloader")
+parser.add_argument('--mode', choices=['daily', '15min'], required=True)
+parser.add_argument('--years', type=int, default=20, help="Years of daily history (daily mode only)")
+parser.add_argument('--output-dir', type=str, 
+                    default="/Users/ronjones/Documents/YahooFinance")
+args = parser.parse_args()
 
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', choices=['daily', '15min'], default='15min')
-    parser.add_argument('--years', type=int, default=5)
-    return parser.parse_args()
+OUTPUT_DIR = Path(args.output_dir)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-def safe_ticker(t):
-    return t.replace('^', '')
+print(f"Saving all files to: {OUTPUT_DIR}")
+print(f"Mode: {args.mode.upper()} – Started at {datetime.now():%Y-%m-%d %H:%M:%S}\n")
 
-def download_and_save(ticker, interval, period=None, start=None, end=None):
-    print(f"  → {ticker} [{interval}]")
+# =============== LOAD TICKERS FROM symbols.txt ===============
+SYMBOLS_FILE = Path(__file__).parent / "symbols.txt"  # Assumes symbols.txt is in same folder as script
+if not SYMBOLS_FILE.exists():
+    print(f"ERROR: symbols.txt not found at {SYMBOLS_FILE}")
+    print("     Download it with: curl -o symbols.txt https://raw.githubusercontent.com/2RJJ/stock-data-updater/master/symbols.txt")
+    sys.exit(1)
+
+TICKERS = []
+with open(SYMBOLS_FILE, 'r') as f:
+    for line in f:
+        line = line.strip()
+        if line and not line.startswith('#'):  # Skip empty lines and comments
+            TICKERS.append(line)
+
+if not TICKERS:
+    print("ERROR: No tickers found in symbols.txt – add some (one per line)!")
+    sys.exit(1)
+
+print(f"Loaded {len(TICKERS)} tickers from symbols.txt: {', '.join(TICKERS[:10])}{'...' if len(TICKERS) > 10 else ''}\n")
+
+failed = []
+
+for ticker in TICKERS:
     try:
-        data = yf.download(ticker, period=period, start=start, end=end, interval=interval, progress=False)
-        if data.empty:
-            print(f"    No data for {ticker}")
-            return None
-        return data
+        print(f"{ticker.ljust(10)} → downloading... ", end="")
+        t = yf.Ticker(ticker)
+
+        if args.mode == "daily":
+            start = (datetime.today() - timedelta(days=args.years * 365)).strftime("%Y-%m-%d")
+            df = t.history(start=start, interval="1d")
+            filename = OUTPUT_DIR / f"{ticker}_daily.csv"
+        else:  # 15min
+            df = t.history(period="60d", interval="15m")
+            filename = OUTPUT_DIR / f"{ticker}_15m.csv"
+
+        if df.empty:
+            print("EMPTY")
+            failed.append(ticker)
+            continue
+
+        df = df.drop(columns=["Dividends", "Stock Splits"], errors="ignore")
+        df.to_csv(filename)
+        print(f"✓ {len(df):,} rows")
+
+        time.sleep(0.5)  # be nice to Yahoo
     except Exception as e:
-        print(f"    Error: {e}")
-        return None
+        print(f"✗ FAILED ({e})")
+        failed.append(ticker)
 
-def main():
-    args = parse_args()
-    os.makedirs(BASE_DIR, exist_ok=True)
-    today = datetime.now().date()
-
-    for i, ticker in enumerate(TICKERS):
-        if i > 0:
-            time.sleep(RATE_LIMIT_SEC)
-
-        safe_name = safe_ticker(ticker)
-        ticker_dir = os.path.join(BASE_DIR, safe_name)
-        os.makedirs(ticker_dir, exist_ok=True)
-        csv_path = os.path.join(ticker_dir, f"{safe_name}_15m.csv")
-
-        if args.mode == 'daily':
-            # DAILY: Full history (once per day)
-            data = download_and_save(ticker, interval="1d", period=f"{args.years}y")
-            if data is not None:
-                data.to_csv(csv_path.replace('_15m', '_daily'))
-                print(f"    Saved daily → {csv_path.replace('_15m', '_daily')}")
-
-        else:
-            # 15-MIN: Only new bars
-            existing = pd.read_csv(csv_path, index_col=0, parse_dates=True) if os.path.exists(csv_path) else pd.DataFrame()
-            last_date = existing.index.max().date() if not existing.empty else (today - timedelta(days=7))
-
-            # Only get data after last known bar
-            start = last_date + timedelta(days=1) if last_date < today else last_date
-            data = download_and_save(ticker, interval="15m", start=start)
-
-            if data is not None and not data.empty:
-                if not existing.empty:
-                    data = pd.concat([existing, data]).drop_duplicates()
-                data.to_csv(csv_path)
-                print(f"    Updated → {len(data)} rows")
-            else:
-                print(f"    No new 15m data")
-
-    print(f"All done → {BASE_DIR}/")
-
-if __name__ == "__main__":
-    main()
+print("\n" + "="*60)
+print(f"Finished {datetime.now():%Y-%m-%d %H:%M:%S}")
+print(f"Success: {len(TICKERS)-len(failed)} / {len(TICKERS)}")
+if failed:
+    print("Failed:", ", ".join(failed))
+print("="*60)
