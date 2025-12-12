@@ -1,34 +1,28 @@
-name: Yahoo Finance → /Users/ronjones/Documents/YahooFinance
+name: Yahoo Finance → Mac Mini Server
 
 on:
   schedule:
-    - cron: '0 0 * * 1-5'                  # Daily at 00:00 UTC
-    - cron: '14,29,44,59 13-20 * * 1-5'    # Every 15 min during US market hours
+    - cron: '0 0 * * 1-5'
+    - cron: '14,29,44,59 13-20 * * 1-5'
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Run mode'
         required: true
         default: '15min'
         type: choice
         options: ['daily', '15min']
 
 jobs:
-  run-on-mac:
+  update:
     runs-on: ubuntu-latest
     steps:
-      - name: Update Yahoo data directly on MacBook Pro
+      - name: Run on Mac Mini
         run: |
           MODE="${{ inputs.mode || '15min' }}"
-          if [[ "$MODE" == "daily" ]]; then
-            ssh -o StrictHostKeyChecking=no ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
-              "cd ~/Scripts/yahoo_update && python3 update_data.py --mode daily --years 30"
-          else
-            ssh -o StrictHostKeyChecking=no ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
-              "cd ~/Scripts/yahoo_update && python3 update_data.py --mode 15min"
-          fi
+          ssh -p 2222 -o StrictHostKeyChecking=no ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
+            "cd ~/Scripts/yahoo_update && ./update_data.py --mode $MODE"
 
-      - name: Show latest files (confirmation)
+      - name: Confirm files
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
+          ssh -p 2222 -o StrictHostKeyChecking=no ${{ secrets.SECONDARY_USER }}@${{ secrets.SECONDARY_HOST }} \
             "ls -lt '/Users/ronjones/Documents/YahooFinance' | head -10"
